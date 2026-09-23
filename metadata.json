@@ -1,0 +1,6 @@
+{
+  "name": "ExoTube - YouTube Automation Studio",
+  "description": "Production-ready YouTube automation studio for generating viral scripts, titles, descriptions, and tags in seconds.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
