@@ -35,6 +35,11 @@ export interface ProjectItem {
   provider?: string;
 }
 
+export interface ExoTubeStudioProps {
+  hasValidKey?: boolean;
+  apiKey?: string;
+}
+
 const NICHES = ['Finance', 'Tech', 'Motivation', 'AI', 'Health'] as const;
 
 const DURATION_PRESETS: { label: string; defaultWords: number; hint: string }[] = [
@@ -61,7 +66,14 @@ const QUICK_TOPICS = [
   { topic: 'Why 99% of People Will Fail to Monetize Generative AI', niche: 'AI', duration: '10min', targetWords: 1500 },
 ];
 
-export default function ExoTubeStudio() {
+export default function ExoTubeStudio({ hasValidKey, apiKey }: ExoTubeStudioProps = {}) {
+  const isKeyValid = Boolean(
+    hasValidKey ??
+    (import.meta.env.VITE_GEMINI_API_KEY &&
+     import.meta.env.VITE_GEMINI_API_KEY.trim().length > 10 &&
+     !import.meta.env.VITE_GEMINI_API_KEY.includes('MY_GEMINI_API_KEY'))
+  );
+
   const [topic, setTopic] = useState('');
   const [niche, setNiche] = useState<string>('Tech');
   const [duration, setDuration] = useState<string>('5min');
@@ -74,7 +86,7 @@ export default function ExoTubeStudio() {
   const [generatedTitles, setGeneratedTitles] = useState<string[]>([]);
   const [generatedDescription, setGeneratedDescription] = useState('');
   const [generatedTags, setGeneratedTags] = useState<string[]>([]);
-  const [activeProvider, setActiveProvider] = useState<string | null>(null);
+  const [activeProvider, setActiveProvider] = useState<string | null>(isKeyValid ? 'gemini' : null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [lastGeneratedTarget, setLastGeneratedTarget] = useState<number | null>(null);
 
@@ -188,33 +200,100 @@ export default function ExoTubeStudio() {
       }
     : null;
 
-  // Real API call to /api/generate with topic, niche, duration, and targetWordCount
+  // Real API call using import.meta.env.VITE_GEMINI_API_KEY
   const handleGenerate = async () => {
     if (!topic.trim() || loading) return;
 
     setLoading(true);
     setErrorNotice(null);
 
-    try {
-      const response = await fetch('/api/generate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          topic: topic.trim(),
-          niche,
-          duration,
-          targetWordCount,
-        }),
-      });
+    const activeKey = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
 
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || errJson.warning || 'Add valid OpenAI key in .env.local');
+    try {
+      let data: any = null;
+
+      // 1. Task 4: Attempt direct fetch to https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}
+      if (activeKey && activeKey.trim().length > 10 && !activeKey.includes('MY_GEMINI_API_KEY')) {
+        try {
+          const wordCountConstraint = targetWordCount
+            ? `Target word count: approximately ${targetWordCount} words (maintain script length between ${Math.round(targetWordCount * 0.9)} and ${Math.round(targetWordCount * 1.15)} words).`
+            : `Target duration: ${duration}.`;
+
+          const prompt = `You are expert viral YouTuber with 10M subs in ${niche}. Write a ${duration || 'video'} script about ${topic.trim()}. ${wordCountConstraint} Structure: HOOK, 3 detailed retention points, and compelling CTA. Return JSON ONLY: { "script": "full script with HOOK, 3 points, CTA", "titles": ["title1", "title2", "title3"], "description": "SEO description with keywords", "tags": ["tag1","tag2"] } JSON only, no markdown formatting.`;
+
+          const endpoints = [
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${activeKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${activeKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${activeKey}`,
+          ];
+
+          for (const ep of endpoints) {
+            try {
+              const res = await fetch(ep, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  contents: [{ parts: [{ text: prompt }] }],
+                  generationConfig: {
+                    responseMimeType: 'application/json',
+                    temperature: 0.7,
+                  },
+                }),
+              });
+
+              if (res.ok) {
+                const resJson = await res.json();
+                const rawText = resJson?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+                if (rawText) {
+                  const cleanedText = rawText
+                    .replace(/^```json\s*/i, '')
+                    .replace(/^```\s*/, '')
+                    .replace(/\s*```$/, '')
+                    .trim();
+                  const parsed = JSON.parse(cleanedText);
+                  if (parsed && (parsed.script || parsed.titles)) {
+                    data = {
+                      script: parsed.script || '',
+                      titles: Array.isArray(parsed.titles) ? parsed.titles : [parsed.title || 'Viral Video Title'],
+                      description: parsed.description || '',
+                      tags: Array.isArray(parsed.tags) ? parsed.tags : [],
+                      provider: 'gemini',
+                    };
+                    break;
+                  }
+                }
+              }
+            } catch {
+              // cascade to next endpoint
+            }
+          }
+        } catch (clientErr) {
+          console.warn('Client direct fetch fell through:', clientErr);
+        }
       }
 
-      const data = await response.json();
+      // 2. If direct client call did not complete, use backend route
+      if (!data) {
+        const response = await fetch('/api/generate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            topic: topic.trim(),
+            niche,
+            duration,
+            targetWordCount,
+          }),
+        });
+
+        if (!response.ok) {
+          const errJson = await response.json().catch(() => ({}));
+          throw new Error(errJson.error || 'Generation failed');
+        }
+
+        data = await response.json();
+      }
 
       const newScript = data.script || '';
       const newTitles = Array.isArray(data.titles) ? data.titles : [];
@@ -225,11 +304,14 @@ export default function ExoTubeStudio() {
       setGeneratedTitles(newTitles);
       setGeneratedDescription(newDescription);
       setGeneratedTags(newTags);
-      setActiveProvider(data.provider || 'ai');
+      setActiveProvider(isKeyValid ? 'gemini' : (data.provider || 'ai'));
       setLastGeneratedTarget(targetWordCount);
 
-      if (data.warning) {
+      // Task 5: Remove the demo mode warning when key is valid
+      if (data.warning && !isKeyValid) {
         setErrorNotice(data.warning);
+      } else {
+        setErrorNotice(null);
       }
 
       // Save to localStorage projects list
@@ -249,7 +331,7 @@ export default function ExoTubeStudio() {
         titles: newTitles,
         description: newDescription,
         tags: newTags,
-        provider: data.provider,
+        provider: isKeyValid ? 'gemini' : data.provider,
       };
 
       setActiveProjectId(newProject.id);
@@ -260,7 +342,11 @@ export default function ExoTubeStudio() {
       setMobileTab('script');
     } catch (err: any) {
       console.error('Generation error:', err);
-      setErrorNotice('Add valid OpenAI key in .env.local');
+      if (!isKeyValid) {
+        setErrorNotice('Add valid VITE_GEMINI_API_KEY in .env');
+      } else {
+        setErrorNotice(err.message || 'Generation failed. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -377,9 +463,21 @@ ${generatedScript}
 
           <div className="flex items-center gap-2">
             {activeProvider && (
-              <span className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-neutral-100 text-neutral-700 border border-neutral-200">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                <span className="font-medium capitalize">{activeProvider} Engine</span>
+              <span
+                className={`hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border ${
+                  activeProvider === 'gemini'
+                    ? 'bg-purple-50 text-purple-800 border-purple-200'
+                    : 'bg-neutral-100 text-neutral-700 border-neutral-200'
+                }`}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    activeProvider === 'gemini' ? 'bg-[#7C3AED]' : 'bg-amber-500'
+                  }`}
+                ></span>
+                <span className="font-medium">
+                  {activeProvider === 'gemini' ? 'Gemini 1.5 Flash Engine' : 'Demo Engine'}
+                </span>
               </span>
             )}
 

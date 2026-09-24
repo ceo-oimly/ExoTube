@@ -9,10 +9,61 @@
     <meta property="og:description" content="Production-ready YouTube automation studio for generating viral scripts, titles, descriptions, and tags in seconds." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- Polyfill / safe getter-setter for window.fetch in sandboxed iframe environments -->
+    <script>
+      (function () {
+        try {
+          var _origFetch = typeof window !== 'undefined' ? window.fetch : null;
+          var _currentFetch = _origFetch;
+
+          if (typeof window !== 'undefined') {
+            // Install both getter and setter on window so scripts reassigning window.fetch do not throw
+            Object.defineProperty(window, 'fetch', {
+              get: function () {
+                return _currentFetch || _origFetch;
+              },
+              set: function (newFetch) {
+                _currentFetch = newFetch;
+              },
+              configurable: true,
+              enumerable: true,
+            });
+          }
+
+          if (typeof Window !== 'undefined' && Window.prototype) {
+            Object.defineProperty(Window.prototype, 'fetch', {
+              get: function () {
+                return _currentFetch || _origFetch;
+              },
+              set: function (newFetch) {
+                _currentFetch = newFetch;
+              },
+              configurable: true,
+              enumerable: true,
+            });
+          }
+        } catch (e) {
+          // Fallback if defineProperty fails
+        }
+
+        // Suppress benign iframe host environment setter errors
+        window.addEventListener('error', function (event) {
+          if (
+            event &&
+            event.message &&
+            event.message.indexOf('Cannot set property fetch of') !== -1
+          ) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

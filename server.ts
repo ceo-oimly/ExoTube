@@ -4,7 +4,33 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { generateVideoPack } from './app/api/generate/route.ts';
 
+// Load .env and .env.local
 dotenv.config();
+dotenv.config({ path: '.env.local', override: true });
+
+// Support import.meta.env in Node/Express runtime
+if (typeof (import.meta as any).env === 'undefined') {
+  (import.meta as any).env = {
+    ...process.env,
+    VITE_GEMINI_API_KEY: process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
+  };
+} else if (!(import.meta as any).env.VITE_GEMINI_API_KEY) {
+  (import.meta as any).env.VITE_GEMINI_API_KEY = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+}
+
+// API Key check using import.meta.env.VITE_GEMINI_API_KEY
+const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY;
+const isGeminiKeyValid = Boolean(
+  geminiApiKey &&
+  geminiApiKey.trim().length > 10 &&
+  !geminiApiKey.includes('MY_GEMINI_API_KEY')
+);
+
+if (isGeminiKeyValid) {
+  console.log(`[ExoTube] Valid VITE_GEMINI_API_KEY detected via import.meta.env (${geminiApiKey.slice(0, 6)}...)`);
+} else {
+  console.warn('[ExoTube] Warning: VITE_GEMINI_API_KEY not found in .env');
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +40,21 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
+
+  // API Status & Key Check Endpoint
+  app.get('/api/status', (_req, res) => {
+    const key = import.meta.env.VITE_GEMINI_API_KEY;
+    const isValid = Boolean(
+      key &&
+      key.trim().length > 10 &&
+      !key.includes('MY_GEMINI_API_KEY')
+    );
+    return res.json({
+      status: 'ok',
+      hasKey: isValid,
+      provider: isValid ? 'gemini' : 'demo',
+    });
+  });
 
   // Direct Next.js App Router route compatibility on Express
   app.post('/api/generate', async (req, res) => {
@@ -37,7 +78,6 @@ async function startServer() {
       console.error('Server /api/generate error:', err);
       return res.status(500).json({
         error: err.message || 'Generation failed',
-        warning: 'Add valid OpenAI key in .env.local',
       });
     }
   });

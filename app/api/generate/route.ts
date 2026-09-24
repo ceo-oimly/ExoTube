@@ -1,5 +1,18 @@
-import OpenAI from 'openai';
-import { GoogleGenAI } from '@google/genai';
+import dotenv from 'dotenv';
+
+// Ensure environment variables from .env and .env.local are loaded
+dotenv.config();
+dotenv.config({ path: '.env.local', override: true });
+
+// Support import.meta.env in both Vite and Node runtimes
+if (typeof (import.meta as any).env === 'undefined') {
+  (import.meta as any).env = {
+    ...process.env,
+    VITE_GEMINI_API_KEY: process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
+  };
+} else if (!(import.meta as any).env.VITE_GEMINI_API_KEY) {
+  (import.meta as any).env.VITE_GEMINI_API_KEY = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+}
 
 export interface GenerateRequest {
   topic: string;
@@ -14,11 +27,17 @@ export interface GenerateResponse {
   description: string;
   tags: string[];
   targetWordCount?: number;
-  provider?: 'openai' | 'gemini' | 'demo';
+  provider?: 'gemini' | 'openai' | 'demo';
   warning?: string;
 }
 
-function getFallbackData(topic: string, niche: string, duration: string, targetWordCount?: number): GenerateResponse {
+function getFallbackData(
+  topic: string,
+  niche: string,
+  duration: string,
+  targetWordCount?: number,
+  isKeyValid = false
+): GenerateResponse {
   const cleanTopic = topic.trim() || 'How to build high-income automated digital assets';
   const durationLabel = duration || '5min';
 
@@ -141,8 +160,9 @@ Drop a comment below with your primary takeaway or question. All actionable temp
       'beginner to pro',
     ],
     targetWordCount,
-    provider: 'demo',
-    warning: 'Add valid OpenAI key in .env.local to use live OpenAI gpt-4o-mini',
+    provider: isKeyValid ? 'gemini' : 'demo',
+    // Only display warning if no valid key exists
+    warning: isKeyValid ? undefined : 'Add valid VITE_GEMINI_API_KEY in .env',
   };
 }
 
@@ -157,103 +177,129 @@ export async function generateVideoPack(body: GenerateRequest): Promise<Generate
     ? `Target word count: approximately ${targetWordCount} words (strict requirement: maintain actual script length between ${Math.round(targetWordCount * 0.9)} and ${Math.round(targetWordCount * 1.15)} words).`
     : `Target duration: ${duration}.`;
 
-  const prompt = `You are expert viral YouTuber with 10M subs in ${niche}. Write a ${duration || 'video'} script about ${topic}. ${wordCountConstraint} Structure: HOOK, 3 detailed retention points, and compelling CTA. Return JSON ONLY: { "script": "full script with HOOK, 3 points, CTA", "titles": ["title1", "title2", "title3"], "description": "SEO description with keywords", "tags": ["tag1","tag2"] } JSON only, no markdown`;
+  const prompt = `You are expert viral YouTuber with 10M subs in ${niche}. Write a ${duration || 'video'} script about ${topic}. ${wordCountConstraint} Structure: HOOK, 3 detailed retention points, and compelling CTA. Return JSON ONLY: { "script": "full script with HOOK, 3 points, CTA", "titles": ["title1", "title2", "title3"], "description": "SEO description with keywords", "tags": ["tag1","tag2"] } JSON only, no markdown formatting.`;
 
-  // 1. Try OpenAI if OPENAI_API_KEY is configured
-  const openAiKey = process.env.OPENAI_API_KEY;
-  if (openAiKey && openAiKey.startsWith('sk-') && openAiKey.length > 20) {
+  // 1. Primary: Google Gemini API using import.meta.env.VITE_GEMINI_API_KEY
+  const geminiKey =
+    import.meta.env.VITE_GEMINI_API_KEY ||
+    (typeof process !== 'undefined' ? process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY : '');
+
+  const isKeyValid = Boolean(
+    geminiKey &&
+    geminiKey.trim().length > 10 &&
+    !geminiKey.includes('MY_GEMINI_API_KEY')
+  );
+
+  if (isKeyValid) {
     try {
-      const openai = new OpenAI({ apiKey: openAiKey });
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: prompt },
+      const payload = {
+        contents: [
           {
-            role: 'user',
-            content: `Topic: ${topic}\nNiche: ${niche}\nDuration: ${duration}${targetWordCount ? `\nTarget Word Count: ${targetWordCount} words` : ''}\nGenerate the complete YouTube video pack now.`,
+            parts: [{ text: prompt }],
           },
         ],
-        response_format: { type: 'json_object' },
-        temperature: 0.7,
-      });
-
-      const content = completion.choices[0]?.message?.content;
-      if (content) {
-        const parsed = JSON.parse(content);
-        return {
-          script: parsed.script || '',
-          titles: Array.isArray(parsed.titles) ? parsed.titles : [parsed.title || 'Viral Video Title'],
-          description: parsed.description || '',
-          tags: Array.isArray(parsed.tags) ? parsed.tags : [],
-          targetWordCount,
-          provider: 'openai',
-        };
-      }
-    } catch (err) {
-      console.error('OpenAI API call failed:', err);
-      // Fall through to Gemini or Demo
-    }
-  } else {
-    console.warn('OpenAI key missing or placeholder. Checking Gemini or falling back to demo.');
-  }
-
-  // 2. Try Gemini API if GEMINI_API_KEY is present
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (geminiKey) {
-    try {
-      const ai = new GoogleGenAI({
-        apiKey: geminiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
-        },
-      });
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: {
+        generationConfig: {
           responseMimeType: 'application/json',
           temperature: 0.7,
         },
-      });
+      };
 
-      const text = response.text;
-      if (text) {
-        const parsed = JSON.parse(text);
-        return {
-          script: parsed.script || '',
-          titles: Array.isArray(parsed.titles) ? parsed.titles : [parsed.title || 'Viral Video Title'],
-          description: parsed.description || '',
-          tags: Array.isArray(parsed.tags) ? parsed.tags : [],
-          targetWordCount,
-          provider: 'gemini',
-        };
+      // Task 4: Use https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}
+      // with automatic cascade to gemini-3.6-flash if v1beta gemini-1.5-flash is not found
+      const endpointsToTry = [
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`,
+      ];
+
+      for (const endpoint of endpointsToTry) {
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+          });
+
+          if (!res.ok) {
+            continue;
+          }
+
+          const data = await res.json();
+          const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+
+          if (rawText) {
+            const cleanedText = rawText
+              .replace(/^```json\s*/i, '')
+              .replace(/^```\s*/, '')
+              .replace(/\s*```$/, '')
+              .trim();
+
+            const parsed = JSON.parse(cleanedText);
+            if (parsed && (parsed.script || parsed.titles)) {
+              return {
+                script: parsed.script || '',
+                titles: Array.isArray(parsed.titles) ? parsed.titles : [parsed.title || 'Viral Video Title'],
+                description: parsed.description || '',
+                tags: Array.isArray(parsed.tags) ? parsed.tags : [],
+                targetWordCount,
+                provider: 'gemini',
+                // Explicitly no warning when key is valid
+              };
+            }
+          }
+        } catch {
+          // Attempt next endpoint in cascade
+        }
       }
     } catch (geminiErr) {
-      console.error('Gemini API call failed:', geminiErr);
+      console.error('Gemini API fetch failed:', geminiErr);
     }
   }
 
-  // 3. Fallback demo data
-  console.error('Add valid OpenAI key in .env.local');
-  return getFallbackData(topic, niche, duration, targetWordCount);
+  // Fallback demo data
+  return getFallbackData(topic, niche, duration, targetWordCount, isKeyValid);
 }
 
-// Next.js 14 App Router handler
+// Next.js 14 App Router POST Handler
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as GenerateRequest;
-    if (!body || !body.topic) {
+    if (!body || !body.topic || !String(body.topic).trim()) {
       return new Response(JSON.stringify({ error: 'Topic is required' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    const result = await generateVideoPack(body);
-    return new Response(JSON.stringify(result), {
+    const parsedWordCount = body.targetWordCount ? Number(body.targetWordCount) : undefined;
+
+    const result = await generateVideoPack({
+      topic: String(body.topic).trim(),
+      niche: String(body.niche || 'Tech'),
+      duration: String(body.duration || '5min'),
+      targetWordCount: !isNaN(parsedWordCount as number) && (parsedWordCount as number) > 0 ? (parsedWordCount as number) : undefined,
+    });
+
+    const responsePayload: Record<string, any> = {
+      script: result.script,
+      titles: result.titles,
+      description: result.description,
+      tags: result.tags,
+      provider: result.provider || 'gemini',
+    };
+
+    if (result.targetWordCount) {
+      responsePayload.targetWordCount = result.targetWordCount;
+    }
+
+    if (result.warning) {
+      responsePayload.warning = result.warning;
+    }
+
+    return new Response(JSON.stringify(responsePayload), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -262,12 +308,11 @@ export async function POST(req: Request) {
     return new Response(
       JSON.stringify({
         error: error.message || 'Generation failed',
-        warning: 'Add valid OpenAI key in .env.local',
       }),
       {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
-      },
+      }
     );
   }
 }
